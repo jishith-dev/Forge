@@ -158,7 +158,7 @@ cd "$WORK_DIR/forge"
 
 log "Running Zen to build Forge..."
 
-zen run main.zen ||
+zen build main.zen ||
     die "The Forge build/run command failed."
 
 [[ -f build/main ]] ||
