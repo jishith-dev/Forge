@@ -1,0 +1,396 @@
+// util.zen - helpers shared by every Forge command
+//
+// On-disk layout (inside .forge/):
+//   objects/<hash>   file contents, named after their SHA-256 (base64url)
+//   commits/<id>     one text file per commit (format is described below)
+//   refs/heads/main  id of the newest commit ("" until the first commit)
+//   index            staging area: one "path|hash" line per tracked file, sorted
+//   HEAD             "ref: refs/heads/main"
+//
+// The index always holds the FULL list of tracked files, exactly like git's
+// index. Staging stores the file contents as an object and records
+// path -> hash. A commit is simply a frozen copy of that list, so every
+// commit is a complete snapshot, not a diff.
+//
+// Commit file format (one value per line, positional, never empty):
+//   0  forge-commit 1
+//   1  parent id ("none" for the first commit)
+//   2  author
+//   3  date
+//   4  message
+//   5+ path|hash   (the snapshot)
+
+fn repoDir() string {
+    return ".forge"
+}
+
+fn indexFile() string {
+    return path.join(repoDir(), "index")
+}
+
+fn branchFile() string {
+    string refs = path.join(repoDir(), "refs")
+    return path.join(path.join(refs, "heads"), "main")
+}
+
+fn objectFile(string hash) string {
+    return path.join(path.join(repoDir(), "objects"), hash)
+}
+
+fn commitFile(string id) string {
+    return path.join(path.join(repoDir(), "commits"), id)
+}
+
+fn authorFile() string {
+    return path.join(repoDir(), "author")
+}
+
+// ---------- colors ----------
+
+fn green(string text) string {
+    return "\e[32m" + text + "\e[0m"
+}
+
+fn red(string text) string {
+    return "\e[31m" + text + "\e[0m"
+}
+
+fn yellow(string text) string {
+    return "\e[33m" + text + "\e[0m"
+}
+
+// ---------- files ----------
+
+// Non-empty lines of a file, or an empty list if the file does not exist.
+fn readLines(string file) List<string> {
+    List<string> lines
+    if (!fs.isFile(file)) {
+        return lines
+    }
+
+    List<string> raw = split(fs.readFile(file), "\n")
+    loop (line of raw) {
+        if (line != "") {
+            lines.push(line)
+        }
+    }
+    return lines
+}
+
+// Write to a temp file, then rename it over the target, so a crash
+// can never leave a half-written file behind. Returns 0 on success.
+fn writeAtomic(string target, string content) int {
+    string temp = target + ".tmp"
+    if (fs.writeFile(temp, content) != 0) {
+        return 1
+    }
+    return fs.renameFile(temp, target)
+}
+
+fn writeLines(string file, List<string> lines) int {
+    string content = ""
+    if (lines.length > 0) {
+        content = lines.join("\n") + "\n"
+    }
+    return writeAtomic(file, content)
+}
+
+fn ensureDir(string dir) void {
+    if (dir == "" || dir == "." || fs.isDir(dir)) {
+        return
+    }
+    ensureDir(path.dirname(dir))
+    fs.makeDir(dir)
+}
+
+// ---------- hashing and objects ----------
+
+fn hashText(string text) string {
+    return crypto.base64UrlEncode(crypto.sha256(text))
+}
+
+fn hashFile(string file) string {
+    return hashText(fs.readFile(file))
+}
+
+// Save contents under their hash (if not already saved). Returns the hash,
+// or "" on failure. Identical contents are stored once, automatically.
+fn storeObject(string content) string {
+    string hash = hashText(content)
+    string target = objectFile(hash)
+    if (!fs.exists(target)) {
+        if (writeAtomic(target, content) != 0) {
+            return ""
+        }
+    }
+    return hash
+}
+
+// First 8 characters of an id. The id is base64url of 32 bytes, so the first
+// 6 bytes encode to exactly the first 8 characters.
+fn shortId(string id) string {
+    List<byte> full = crypto.base64UrlDecode(id)
+    List<byte> first
+    loop (int i = 0, i < 6, i++) {
+        first.push(full[i])
+    }
+    return crypto.base64UrlEncode(first)
+}
+
+// ---------- snapshots: lists of "path|hash" lines ----------
+
+fn entryPath(string entry) string {
+    List<string> parts = split(entry, "|")
+    return parts[0]
+}
+
+fn entryHash(string entry) string {
+    List<string> parts = split(entry, "|")
+    return parts[1]
+}
+
+// Position of a path in a snapshot, or -1.
+fn snapFind(List<string> snap, string file) int {
+    string prefix = file + "|"
+    loop (int i = 0, i < snap.length, i++) {
+        if (startsWith(snap[i], prefix)) {
+            return i
+        }
+    }
+    return -1
+}
+
+// Hash of a path in a snapshot, or "" if it is not there.
+fn snapHash(List<string> snap, string file) string {
+    int pos = snapFind(snap, file)
+    if (pos < 0) {
+        return ""
+    }
+    return entryHash(snap[pos])
+}
+
+// ---------- commits ----------
+
+fn headId() string {
+    if (!fs.isFile(branchFile())) {
+        return ""
+    }
+    return trim(fs.readFile(branchFile()))
+}
+
+fn readCommit(string id) List<string> {
+    List<string> lines = split(fs.readFile(commitFile(id)), "\n")
+    return lines
+}
+
+fn commitSnapshot(List<string> commitLines) List<string> {
+    List<string> snap
+    loop (int i = 5, i < commitLines.length, i++) {
+        if (commitLines[i] != "") {
+            snap.push(commitLines[i])
+        }
+    }
+    return snap
+}
+
+// Snapshot of the newest commit (empty if there are no commits yet).
+fn headSnapshot() List<string> {
+    List<string> empty
+    string id = headId()
+    if (id == "" || !fs.isFile(commitFile(id))) {
+        return empty
+    }
+    List<string> lines = readCommit(id)
+    return commitSnapshot(lines)
+}
+
+fn nowStamp() string {
+    return trim(sys.execOutput("date '+%Y-%m-%d %H:%M:%S'"))
+}
+
+// Who to record as the author: "forge config name", then $FORGE_AUTHOR,
+// then the operating system user.
+fn authorName() string {
+    if (fs.isFile(authorFile())) {
+        string saved = trim(fs.readFile(authorFile()))
+        if (saved != "") {
+            return saved
+        }
+    }
+
+    if (sys.hasEnv("FORGE_AUTHOR")) {
+        string fromEnv = trim(sys.getEnv("FORGE_AUTHOR"))
+        if (fromEnv != "") {
+            return fromEnv
+        }
+    }
+
+    return os.username()
+}
+
+// Full commit id from the start of one (as shown by "forge log --short").
+// Returns "" and prints why if it matches none or several.
+fn resolveCommit(string prefix) string {
+    if (prefix == "") {
+        return ""
+    }
+
+    List<string> names = fs.listDir(path.join(repoDir(), "commits"))
+    string found = ""
+    int matches = 0
+    loop (name of names) {
+        if (!contains(name, ".") && startsWith(name, prefix)) {
+            found = name
+            matches = matches + 1
+        }
+    }
+
+    if (matches == 1) {
+        return found
+    }
+
+    if (matches == 0) {
+        screen("Error: no commit starts with '" + prefix + "'")
+    } else {
+        screen("Error: '" + prefix + "' matches several commits, type more characters")
+    }
+    return ""
+}
+
+// ---------- ignore rules (.forgeignore) ----------
+
+fn loadIgnoreRules() List<string> {
+    List<string> rules
+    List<string> lines = readLines(".forgeignore")
+    loop (line of lines) {
+        string rule = trim(line)
+        if (rule != "" && !startsWith(rule, "#")) {
+            rules.push(rule)
+        }
+    }
+    return rules
+}
+
+// True for .forge / .git and anything matching a rule by name or path.
+fn isIgnored(string rel, List<string> rules) bool {
+    string name = path.basename(rel)
+    if (name == ".forge" || name == ".git") {
+        return true
+    }
+    loop (rule of rules) {
+        if (rule == rel || rule == name || rule == name + "/" || rule == rel + "/") {
+            return true
+        }
+    }
+    return false
+}
+
+// Like isIgnored, but also true when any parent folder is ignored.
+fn isIgnoredPath(string rel, List<string> rules) bool {
+    string current = rel
+    while (current != "." && current != "") {
+        if (isIgnored(current, rules)) {
+            return true
+        }
+        string up = path.dirname(current)
+        if (up == current) {
+            return false
+        }
+        current = up
+    }
+    return false
+}
+
+// ---------- working tree ----------
+
+// Collect every non-ignored file under dir ("." = repository root).
+fn walk(string dir, List<string> rules, List<string> out) void {
+    List<string> names = fs.listDir(dir)
+    names.sort()
+
+    loop (name of names) {
+        if (name != "." && name != "..") {
+            string rel = name
+            if (dir != ".") {
+                rel = path.join(dir, name)
+            }
+
+            if (!isIgnored(rel, rules)) {
+                if (fs.isDir(rel)) {
+                    walk(rel, rules, out)
+                } else if (fs.isFile(rel)) {
+                    out.push(rel)
+                }
+            }
+        }
+    }
+}
+
+// ---------- repository discovery and paths ----------
+
+// Walk up from the current folder until a .forge folder is found.
+// Returns the repository root, or "" if there is none.
+fn findRepoRoot() string {
+    string dir = fs.cwd()
+    while (true) {
+        if (fs.isDir(path.join(dir, ".forge"))) {
+            return dir
+        }
+        string parent = path.dirname(dir)
+        if (parent == dir) {
+            return ""
+        }
+        dir = parent
+    }
+    return ""
+}
+
+// Where the current folder sits inside the repository ("" at the root).
+fn relativeToRoot(string root) string {
+    string dir = fs.cwd()
+    string rel = ""
+    while (dir != root) {
+        string name = path.basename(dir)
+        if (rel == "") {
+            rel = name
+        } else {
+            rel = name + "/" + rel
+        }
+        string parent = path.dirname(dir)
+        if (parent == dir) {
+            return rel
+        }
+        dir = parent
+    }
+    return rel
+}
+
+// Turn a path typed by the user into a path relative to the repository root.
+fn toRepoPath(string rel, string arg) string {
+    string full = arg
+    if (rel != "") {
+        full = path.join(rel, arg)
+    }
+    return path.normalize(full)
+}
+
+fn isOutside(string repoPath) bool {
+    return repoPath == ".." || startsWith(repoPath, "../") || startsWith(repoPath, "/")
+}
+
+// Does a tracked path fall under a target ("." = everything, a file, or a folder)?
+fn inScope(string tracked, string target) bool {
+    if (target == ".") {
+        return true
+    }
+    return tracked == target || startsWith(tracked, target + "/")
+}
+
+export (repoDir, indexFile, branchFile, objectFile, commitFile, authorFile)
+export (green, red, yellow)
+export (readLines, writeAtomic, writeLines, ensureDir)
+export (hashText, hashFile, storeObject, shortId)
+export (entryPath, entryHash, snapFind, snapHash)
+export (headId, readCommit, commitSnapshot, headSnapshot, nowStamp, authorName, resolveCommit)
+export (loadIgnoreRules, isIgnored, isIgnoredPath, walk)
+export (findRepoRoot, relativeToRoot, toRepoPath, isOutside, inScope)

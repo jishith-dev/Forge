@@ -1,0 +1,9 @@
+{
+  "name": "forge",
+  "version": "1.0.0",
+  "author": "Jishith-dev",
+  "repo": "https://github.com/Jishith-dev/forge",
+  "description": "Forge is a lightweight version control system built in Zen, featuring staging, commits, change tracking, history, and recovery to demonstrate Zen's capabilities in real-world systems development.",
+  "main": "main.zen",
+  "dependencies": {}
+}

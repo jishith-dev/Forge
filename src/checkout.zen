@@ -1,0 +1,88 @@
+import (indexFile, branchFile, readLines, writeLines, writeAtomic, entryPath, entryHash, snapFind, hashFile, headId, headSnapshot, readCommit, commitSnapshot, resolveCommit, shortId) from "util.zen"
+import (restoreOne) from "restore.zen"
+
+// Staged changes or edited tracked files would be lost by a checkout.
+fn firstUncommitted(List<string> idx, List<string> last) string {
+    if (idx.join("\n") != last.join("\n")) {
+        return "staged changes"
+    }
+
+    loop (entry of idx) {
+        string file = entryPath(entry)
+        if (!fs.isFile(file) || hashFile(file) != entryHash(entry)) {
+            return file
+        }
+    }
+    return ""
+}
+
+// Move the branch to a commit and make the working tree and index match its
+// snapshot (like git reset --hard). Old commits stay on disk, and you can
+// go back by checking out their id again.
+fn checkout(string prefix, bool force) void {
+    string id = resolveCommit(prefix)
+    if (id == "") {
+        return
+    }
+
+    string old = headId()
+    if (id == old && !force) {
+        screen("Already at " + shortId(id))
+        return
+    }
+
+    List<string> idx = readLines(indexFile())
+    List<string> lines = readCommit(id)
+    List<string> target = commitSnapshot(lines)
+
+    if (!force) {
+        List<string> last = headSnapshot()
+
+        string dirty = firstUncommitted(idx, last)
+        if (dirty != "") {
+            screen("Error: uncommitted changes would be lost: " + dirty)
+            screen("Commit or restore them first, or use --force")
+            return
+        }
+
+        loop (entry of target) {
+            string file = entryPath(entry)
+            if (fs.isFile(file) && snapFind(idx, file) < 0 && hashFile(file) != entryHash(entry)) {
+                screen("Error: untracked file would be overwritten: " + file)
+                screen("Move it away first, or use --force")
+                return
+            }
+        }
+    }
+
+    // files tracked now but absent from the target commit
+    loop (entry of idx) {
+        string file = entryPath(entry)
+        if (snapFind(target, file) < 0 && fs.isFile(file)) {
+            fs.deleteFile(file)
+            screen("  removed:    " + file)
+        }
+    }
+
+    // files in the target commit
+    loop (entry of target) {
+        restoreOne(entryPath(entry), entryHash(entry))
+    }
+
+    if (writeLines(indexFile(), target) != 0) {
+        screen("Error: could not update the index")
+        return
+    }
+
+    if (writeAtomic(branchFile(), id) != 0) {
+        screen("Error: could not move the branch")
+        return
+    }
+
+    screen("Now at " + shortId(id) + ": " + lines[4])
+    if (old != "") {
+        screen("Previous tip was " + shortId(old) + " (forge checkout " + shortId(old) + " to go back)")
+    }
+}
+
+export (checkout)

@@ -1,0 +1,22 @@
+import (authorFile, authorName, writeAtomic) from "util.zen"
+
+fn showAuthor() void {
+    screen(authorName())
+}
+
+fn setAuthor(string name) void {
+    string clean = trim(name)
+    if (clean == "" || contains(clean, "\n")) {
+        screen("Error: the name must be a single non-empty line")
+        return
+    }
+
+    if (writeAtomic(authorFile(), clean + "\n") != 0) {
+        screen("Error: could not save the name")
+        return
+    }
+
+    screen("Author name set to " + clean)
+}
+
+export (showAuthor, setAuthor)

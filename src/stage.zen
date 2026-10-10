@@ -1,0 +1,104 @@
+import (indexFile, readLines, writeLines, loadIgnoreRules, isIgnoredPath, walk, snapFind, entryPath, entryHash, storeObject, inScope) from "util.zen"
+
+// Stage one file into the in-memory index. Returns 1 if anything changed.
+fn stageOne(List<string> idx, string file) int {
+    if (contains(file, "|") || contains(file, "\n")) {
+        screen("Error: unsupported character in file name: " + file)
+        return 0
+    }
+
+    string hash = storeObject(fs.readFile(file))
+    if (hash == "") {
+        screen("Error: failed to save " + file)
+        return 0
+    }
+
+    int pos = snapFind(idx, file)
+    if (pos < 0) {
+        idx.push(file + "|" + hash)
+        screen("  new file:   " + file)
+        return 1
+    }
+
+    if (entryHash(idx[pos]) == hash) {
+        return 0
+    }
+
+    idx[pos] = file + "|" + hash
+    screen("  modified:   " + file)
+    return 1
+}
+
+// Stage a folder: new and modified files inside it, plus tracked files that
+// no longer exist (deletions).
+fn stageDir(List<string> idx, List<string> rules, string dir) int {
+    List<string> files
+    walk(dir, rules, files)
+
+    int changed = 0
+    loop (file of files) {
+        changed = changed + stageOne(idx, file)
+    }
+
+    int i = idx.length - 1
+    while (i >= 0) {
+        string tracked = entryPath(idx[i])
+        if (inScope(tracked, dir) && !fs.isFile(tracked)) {
+            screen("  deleted:    " + tracked)
+            idx.removeAt(i)
+            changed = changed + 1
+        }
+        i = i - 1
+    }
+    return changed
+}
+
+// The target no longer exists on disk: stage its deletion.
+fn stageGone(List<string> idx, string target) int {
+    int removed = 0
+    int i = idx.length - 1
+    while (i >= 0) {
+        string tracked = entryPath(idx[i])
+        if (inScope(tracked, target)) {
+            screen("  deleted:    " + tracked)
+            idx.removeAt(i)
+            removed = removed + 1
+        }
+        i = i - 1
+    }
+
+    if (removed == 0) {
+        screen("Error: '" + target + "' did not match any file")
+    }
+    return removed
+}
+
+fn stage(List<string> targets) void {
+    List<string> idx = readLines(indexFile())
+    List<string> rules = loadIgnoreRules()
+    int changed = 0
+
+    loop (target of targets) {
+        if (isIgnoredPath(target, rules)) {
+            screen("Ignored: " + target)
+        } else if (fs.isDir(target)) {
+            changed = changed + stageDir(idx, rules, target)
+        } else if (fs.isFile(target)) {
+            changed = changed + stageOne(idx, target)
+        } else {
+            changed = changed + stageGone(idx, target)
+        }
+    }
+
+    if (changed == 0) {
+        screen("Nothing to stage")
+        return
+    }
+
+    idx.sort()
+    if (writeLines(indexFile(), idx) != 0) {
+        screen("Error: could not update the index")
+    }
+}
+
+export (stage)

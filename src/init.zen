@@ -1,0 +1,44 @@
+import (repoDir) from "util.zen"
+
+fn init() void {
+    string repo = repoDir()
+    if (fs.exists(repo)) {
+        screen("Forge repository already exists")
+        return
+    }
+
+    string refs = path.join(repo, "refs")
+    List<string> dirs = [
+        repo,
+        path.join(repo, "objects"),
+        path.join(repo, "commits"),
+        refs,
+        path.join(refs, "heads")
+    ]
+
+    loop (dir of dirs) {
+        if (fs.makeDir(dir) != 0) {
+            screen("Error: could not create " + dir)
+            return
+        }
+    }
+
+    if (fs.writeFile(path.join(repo, "HEAD"), "ref: refs/heads/main\n") != 0) {
+        screen("Error: could not write HEAD")
+        return
+    }
+
+    if (fs.writeFile(path.join(repo, "index"), "") != 0) {
+        screen("Error: could not create the index")
+        return
+    }
+
+    if (fs.writeFile(path.join(refs, "heads/main"), "") != 0) {
+        screen("Error: could not create the main branch")
+        return
+    }
+
+    screen("Initialized empty Forge repository in " + path.join(fs.cwd(), repo))
+}
+
+export (init)

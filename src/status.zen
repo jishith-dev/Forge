@@ -1,0 +1,79 @@
+import (indexFile, readLines, loadIgnoreRules, walk, snapFind, snapHash, entryPath, entryHash, hashFile, headId, headSnapshot, green, red) from "util.zen"
+
+fn section(string title, List<string> lines, bool staged) void {
+    if (lines.length == 0) {
+        return
+    }
+
+    screen(title)
+    loop (line of lines) {
+        if (staged) {
+            screen(green(line))
+        } else {
+            screen(red(line))
+        }
+    }
+    screen("")
+}
+
+fn status() void {
+    List<string> idx = readLines(indexFile())
+    List<string> last = headSnapshot()
+
+    // staged: index compared with the last commit
+    List<string> staged
+    loop (entry of idx) {
+        string file = entryPath(entry)
+        string before = snapHash(last, file)
+        if (before == "") {
+            staged.push("  new file:   " + file)
+        } else if (before != entryHash(entry)) {
+            staged.push("  modified:   " + file)
+        }
+    }
+    loop (entry of last) {
+        if (snapFind(idx, entryPath(entry)) < 0) {
+            staged.push("  deleted:    " + entryPath(entry))
+        }
+    }
+
+    // not staged: working tree compared with the index
+    List<string> unstaged
+    loop (entry of idx) {
+        string file = entryPath(entry)
+        if (!fs.isFile(file)) {
+            unstaged.push("  deleted:    " + file)
+        } else if (hashFile(file) != entryHash(entry)) {
+            unstaged.push("  modified:   " + file)
+        }
+    }
+
+    // untracked: on disk but not in the index
+    List<string> rules = loadIgnoreRules()
+    List<string> files
+    walk(".", rules, files)
+    List<string> untracked
+    loop (name of files) {
+        if (snapFind(idx, name) < 0) {
+            untracked.push("  " + name)
+        }
+    }
+
+    screen("On branch main")
+    if (headId() == "") {
+        screen("No commits yet")
+    }
+    screen("")
+
+    section("Staged for commit:", staged, true)
+    section("Changed but not staged:", unstaged, false)
+    section("Untracked files:", untracked, false)
+
+    if (staged.length == 0 && unstaged.length == 0 && untracked.length == 0) {
+        screen("Nothing to commit, working tree clean")
+    } else if (staged.length == 0) {
+        screen("Nothing staged for commit (use: forge stage <file>)")
+    }
+}
+
+export (status)

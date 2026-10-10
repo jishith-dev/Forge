@@ -1,0 +1,50 @@
+import (indexFile, objectFile, readLines, entryPath, entryHash, hashFile, inScope, ensureDir) from "util.zen"
+
+// Bring one file back from its stored copy. Returns 1 if it was rewritten.
+fn restoreOne(string file, string hash) int {
+    string source = objectFile(hash)
+    if (!fs.isFile(source)) {
+        screen("Error: stored copy of " + file + " is missing")
+        return 0
+    }
+
+    if (fs.isFile(file) && hashFile(file) == hash) {
+        return 0
+    }
+
+    ensureDir(path.dirname(file))
+    if (fs.writeFile(file, fs.readFile(source)) != 0) {
+        screen("Error: could not write " + file)
+        return 0
+    }
+
+    screen("  restored:   " + file)
+    return 1
+}
+
+// Like git restore: puts files back to the version in the index
+// (the last staged version, which is the last commit if nothing is staged).
+fn restore(List<string> targets) void {
+    List<string> idx = readLines(indexFile())
+
+    loop (target of targets) {
+        int matched = 0
+        int restored = 0
+
+        loop (entry of idx) {
+            string file = entryPath(entry)
+            if (inScope(file, target)) {
+                matched = matched + 1
+                restored = restored + restoreOne(file, entryHash(entry))
+            }
+        }
+
+        if (matched == 0) {
+            screen("Error: '" + target + "' is not tracked, nothing to restore")
+        } else if (restored == 0) {
+            screen("Already up to date: " + target)
+        }
+    }
+}
+
+export (restore, restoreOne)

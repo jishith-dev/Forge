@@ -1,0 +1,203 @@
+import (indexFile, objectFile, readLines, entryPath, entryHash, snapFind, snapHash, hashFile, headSnapshot, inScope, green, red, yellow) from "util.zen"
+
+// Lines of a text, without the empty piece after a final newline.
+fn toLines(string text) List<string> {
+    List<string> empty
+    if (text == "") {
+        return empty
+    }
+
+    List<string> lines = split(text, "\n")
+    if (lines.length > 0 && lines[lines.length - 1] == "") {
+        lines.removeAt(lines.length - 1)
+    }
+    return lines
+}
+
+fn wanted(string tracked, List<string> targets) bool {
+    loop (target of targets) {
+        if (inScope(tracked, target)) {
+            return true
+        }
+    }
+    return false
+}
+
+// Print the line changes between two texts. Returns 1 if anything was printed.
+//
+// Uses the classic longest-common-subsequence table: lcs[i][j] is the length
+// of the longest common run of old[i..] and new[j..], stored flat in one list.
+// Walking it forward from (0, 0) gives the edit script: " " same, "-" removed,
+// "+" added.
+fn diffLines(string name, string oldText, string newText) int {
+    if (oldText == newText) {
+        return 0
+    }
+
+    List<string> a = toLines(oldText)
+    List<string> b = toLines(newText)
+    int n = a.length
+    int m = b.length
+    int w = m + 1
+
+    screen(yellow("diff " + name))
+
+    if (n * m > 4000000) {
+        screen("  (file too large to diff)")
+        return 1
+    }
+
+    List<int> lcs
+    int cells = (n + 1) * w
+    loop (int c = 0, c < cells, c++) {
+        lcs.push(0)
+    }
+
+    int i = n - 1
+    while (i >= 0) {
+        int j = m - 1
+        while (j >= 0) {
+            if (a[i] == b[j]) {
+                lcs[i * w + j] = lcs[(i + 1) * w + j + 1] + 1
+            } else {
+                int down = lcs[(i + 1) * w + j]
+                int right = lcs[i * w + j + 1]
+                if (down >= right) {
+                    lcs[i * w + j] = down
+                } else {
+                    lcs[i * w + j] = right
+                }
+            }
+            j = j - 1
+        }
+        i = i - 1
+    }
+
+    List<string> ops
+    int x = 0
+    int y = 0
+    while (x < n && y < m) {
+        if (a[x] == b[y]) {
+            ops.push(" " + a[x])
+            x = x + 1
+            y = y + 1
+        } else if (lcs[(x + 1) * w + y] >= lcs[x * w + y + 1]) {
+            ops.push("-" + a[x])
+            x = x + 1
+        } else {
+            ops.push("+" + b[y])
+            y = y + 1
+        }
+    }
+    while (x < n) {
+        ops.push("-" + a[x])
+        x = x + 1
+    }
+    while (y < m) {
+        ops.push("+" + b[y])
+        y = y + 1
+    }
+
+    // show every change with 3 lines of context around it
+    List<int> visible
+    loop (int c = 0, c < ops.length, c++) {
+        visible.push(0)
+    }
+
+    int k = 0
+    while (k < ops.length) {
+        if (!startsWith(ops[k], " ")) {
+            int fromm = k - 3
+            if (fromm < 0) {
+                fromm = 0
+            }
+            int to = k + 3
+            if (to > ops.length - 1) {
+                to = ops.length - 1
+            }
+            int t = fromm
+            while (t <= to) {
+                visible[t] = 1
+                t = t + 1
+            }
+        }
+        k = k + 1
+    }
+
+    bool skipped = false
+    bool printed = false
+    k = 0
+    while (k < ops.length) {
+        if (visible[k] == 1) {
+            if (skipped && printed) {
+                screen("  ...")
+            }
+            skipped = false
+            printed = true
+
+            string op = ops[k]
+            if (startsWith(op, "-")) {
+                screen(red(op))
+            } else if (startsWith(op, "+")) {
+                screen(green(op))
+            } else {
+                screen(op)
+            }
+        } else {
+            skipped = true
+        }
+        k = k + 1
+    }
+
+    screen("")
+    return 1
+}
+
+// staged = false: working tree compared with the index (what is not staged yet)
+// staged = true:  index compared with the last commit (what will be committed)
+fn diff(bool staged, List<string> targets) void {
+    List<string> idx = readLines(indexFile())
+    int shown = 0
+
+    if (staged) {
+        List<string> last = headSnapshot()
+
+        loop (entry of idx) {
+            string file = entryPath(entry)
+            if (wanted(file, targets)) {
+                string before = snapHash(last, file)
+                if (before != entryHash(entry)) {
+                    string oldText = ""
+                    if (before != "") {
+                        oldText = fs.readFile(objectFile(before))
+                    }
+                    shown = shown + diffLines(file, oldText, fs.readFile(objectFile(entryHash(entry))))
+                }
+            }
+        }
+
+        loop (entry of last) {
+            string file = entryPath(entry)
+            if (wanted(file, targets) && snapFind(idx, file) < 0) {
+                shown = shown + diffLines(file, fs.readFile(objectFile(entryHash(entry))), "")
+            }
+        }
+    } else {
+        loop (entry of idx) {
+            string file = entryPath(entry)
+            if (wanted(file, targets)) {
+                if (!fs.isFile(file)) {
+                    shown = shown + diffLines(file, fs.readFile(objectFile(entryHash(entry))), "")
+                } else if (hashFile(file) != entryHash(entry)) {
+                    shown = shown + diffLines(file, fs.readFile(objectFile(entryHash(entry))), fs.readFile(file))
+                }
+            }
+        }
+    }
+
+    if (shown == 0) {
+        screen("No changes")
+    }
+}
+
+export (diff)

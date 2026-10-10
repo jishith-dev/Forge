@@ -1,0 +1,71 @@
+import (indexFile, branchFile, objectFile, commitFile, readLines, entryPath, entryHash, headId, headSnapshot, hashText, writeAtomic, shortId, nowStamp, authorName) from "util.zen"
+
+// A commit is a snapshot: the complete list of tracked files (path -> hash)
+// taken from the index, plus parent, author, date and message.
+// File contents were already saved as objects when the files were staged.
+fn commit(string message) void {
+    if (trim(message) == "") {
+        screen("Error: commit message cannot be empty")
+        return
+    }
+
+    if (contains(message, "\n")) {
+        screen("Error: commit message must be a single line")
+        return
+    }
+
+    List<string> idx = readLines(indexFile())
+    string head = headId()
+
+    if (head == "" && idx.length == 0) {
+        screen("Nothing to commit: no files are staged (use: forge stage <file>)")
+        return
+    }
+
+    if (head != "") {
+        List<string> last = headSnapshot()
+        if (idx.join("\n") == last.join("\n")) {
+            screen("Nothing to commit: no changes staged since the last commit")
+            return
+        }
+    }
+
+    // every file in the snapshot must have its stored copy
+    loop (entry of idx) {
+        if (!fs.isFile(objectFile(entryHash(entry)))) {
+            screen("Error: stored copy of " + entryPath(entry) + " is missing, stage it again")
+            return
+        }
+    }
+
+    string parent = head
+    if (head == "") {
+        parent = "none"
+    }
+
+    string content = "forge-commit 1\n"
+    content = content + parent + "\n"
+    content = content + authorName() + "\n"
+    content = content + nowStamp() + "\n"
+    content = content + message + "\n"
+    loop (entry of idx) {
+        content = content + entry + "\n"
+    }
+
+    string id = hashText(content)
+
+    if (writeAtomic(commitFile(id), content) != 0) {
+        screen("Error: could not save the commit")
+        return
+    }
+
+    if (writeAtomic(branchFile(), id) != 0) {
+        screen("Error: commit saved, but the branch could not be updated")
+        return
+    }
+
+    screen("[main " + shortId(id) + "] " + message)
+    screen(idx.length + " file(s) in snapshot")
+}
+
+export (commit)

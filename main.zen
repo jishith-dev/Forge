@@ -1,0 +1,198 @@
+import (init) from "src/init.zen"
+import (stage) from "src/stage.zen"
+import (status) from "src/status.zen"
+import (commit) from "src/commit.zen"
+import (showLog) from "src/history.zen"
+import (restore) from "src/restore.zen"
+import (diff) from "src/diff.zen"
+import (checkout) from "src/checkout.zen"
+import (showAuthor, setAuthor) from "src/config.zen"
+import (findRepoRoot, relativeToRoot, toRepoPath, isOutside) from "src/util.zen"
+
+List<string> args = sys.argv()
+// remove first arg which is source
+if (args.length > 0) {
+    args.removeAt(0)
+}
+
+fn usage() void {
+    screen(`Forge - a tiny version control system written in Zen
+
+Usage: forge <command> [arguments]
+
+Commands:
+  init                  create an empty repository here
+  stage <path...>       stage files or folders; "." stages everything,
+                        including deleted files
+  status                show staged, unstaged and untracked changes
+  commit "message"      save a snapshot of everything that is staged
+  log [--short]         show history, newest first
+  diff [--staged] [path...]
+                        show line changes; by default working tree vs
+                        staged, with --staged staged vs last commit
+  --restore <path...>   bring files back to their last staged version
+  checkout <id> [--force]
+                        move main to a commit (id from log) and restore
+                        its files; --force discards uncommitted changes
+  config name ["Name"]  show or set the author name for commits
+  --help                show this help
+  
+  --version             show the current version
+
+Names listed in .forgeignore (one per line) are skipped.`)
+}
+
+// Turn the arguments from position first onward into repo-relative paths.
+// Returns an empty list (after printing why) if one is not allowed.
+fn targetsFrom(string rel, int first) List<string> {
+    List<string> targets
+    loop (int i = first, i < args.length, i++) {
+        string arg = args[i]
+        string target = toRepoPath(rel, arg)
+        if (startsWith(arg, "/") || isOutside(target)) {
+            screen("Error: path is outside the repository: " + arg)
+            List<string> none
+            return none
+        }
+        targets.push(target)
+    }
+    return targets
+}
+
+fn dispatch() void {
+    if (args.length == 0) {
+        usage()
+        return
+    }
+
+    string cmd = args[0]
+
+    if (cmd == "--help" || cmd == "-h" || cmd == "help") {
+        usage()
+        return
+    }
+
+    if (cmd == "--version") {
+       screen("Forge: v1.0.0 (latest)
+       return
+    }
+
+    if (cmd == "init") {
+        init()
+        return
+    }
+
+    // every other command works from the repository root, wherever you run it
+    string root = findRepoRoot()
+    if (root == "") {
+        screen("Error: not a Forge repository (run: forge init)")
+        return
+    }
+
+    string rel = relativeToRoot(root)
+    if (fs.changeDir(root) != 0) {
+        screen("Error: could not enter " + root)
+        return
+    }
+
+    if (cmd == "stage") {
+        if (args.length < 2) {
+            screen("Usage: forge stage <path...>  (use . for everything)")
+            return
+        }
+        List<string> targets = targetsFrom(rel, 1)
+        if (targets.length == 0) {
+            return
+        }
+        stage(targets)
+        return
+    }
+
+    if (cmd == "status") {
+        status()
+        return
+    }
+
+    if (cmd == "commit") {
+        if (args.length != 2) {
+            screen("Usage: forge commit \"message\"")
+            return
+        }
+        commit(args[1])
+        return
+    }
+
+    if (cmd == "log") {
+        if (args.length == 1) {
+            showLog(false)
+            return
+        }
+        if (args.length == 2 && args[1] == "--short") {
+            showLog(true)
+            return
+        }
+        screen("Usage: forge log [--short]")
+        return
+    }
+
+    if (cmd == "diff") {
+        bool staged = false
+        int first = 1
+        if (args.length > 1 && args[1] == "--staged") {
+            staged = true
+            first = 2
+        }
+
+        List<string> scope
+        if (args.length == first) {
+            scope.push(".")
+        } else {
+            scope = targetsFrom(rel, first)
+            if (scope.length == 0) {
+                return
+            }
+        }
+        diff(staged, scope)
+        return
+    }
+
+    if (cmd == "checkout") {
+        if (args.length < 2 || args.length > 3 || (args.length == 3 && args[2] != "--force")) {
+            screen("Usage: forge checkout <id> [--force]")
+            return
+        }
+        checkout(args[1], args.length == 3)
+        return
+    }
+
+    if (cmd == "config") {
+        if (args.length == 2 && args[1] == "name") {
+            showAuthor()
+            return
+        }
+        if (args.length == 3 && args[1] == "name") {
+            setAuthor(args[2])
+            return
+        }
+        screen("Usage: forge config name [\"Your Name\"]")
+        return
+    }
+
+    if (cmd == "--restore" || cmd == "restore") {
+        if (args.length < 2) {
+            screen("Usage: forge --restore <path...>")
+            return
+        }
+        List<string> targets = targetsFrom(rel, 1)
+        if (targets.length == 0) {
+            return
+        }
+        restore(targets)
+        return
+    }
+
+    screen("Forge: unknown command '" + cmd + "'")
+    screen("Run: forge --help")
+}
+
+dispatch()
