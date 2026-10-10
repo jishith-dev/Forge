@@ -73,7 +73,7 @@ fn dispatch() void {
     }
 
     if (cmd == "--version") {
-       screen("Forge: v1.0.0 (latest)
+       screen("Forge: v1.0.0 (latest)")
        return
     }
 
